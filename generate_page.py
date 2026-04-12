@@ -1,6 +1,7 @@
 """
 Generates a styled, password-protected HTML dashboard
 from the visa bulletin scraper results, with a personal tracker section.
+Priority date is encrypted at build time and only revealed after login.
 """
 
 import os
@@ -9,14 +10,21 @@ import json
 from datetime import datetime, timezone
 from visa_bulletin_f4_china import main
 
+
 def sha256(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
-def generate_html(results, password):
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    pw_hash = sha256(password)
 
-    # Build JSON data for JS to consume
+def xor_encrypt(text, key):
+    return [ord(c) ^ ord(key[i % len(key)]) for i, c in enumerate(text)]
+
+
+def generate_html(results, password, priority_date=""):
+    now             = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    pw_hash         = sha256(password)
+    encrypted_date  = xor_encrypt(priority_date, pw_hash) if priority_date else []
+    enc_js          = str(encrypted_date)
+
     table_data = json.dumps([
         {
             "bulletin":          r["bulletin"],
@@ -103,8 +111,6 @@ def generate_html(results, password):
     }}
     .stat-card .value {{ font-size: 18px; font-weight: 600; color: #e2e8f0; }}
     .stat-card .value.accent {{ color: #818cf8; }}
-    .stat-card .value.green  {{ color: #22c55e; }}
-    .stat-card .value.amber  {{ color: #f59e0b; }}
 
     main {{ padding: 32px 40px; }}
 
@@ -130,17 +136,12 @@ def generate_html(results, password):
       font-size: 11px; color: #64748b;
       text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px;
     }}
-    .tracker-item .t-value {{
-      font-size: 16px; font-weight: 600; color: #e2e8f0;
-    }}
+    .tracker-item .t-value {{ font-size: 16px; font-weight: 600; color: #e2e8f0; }}
     .tracker-item .t-value.purple {{ color: #818cf8; }}
     .tracker-item .t-value.green  {{ color: #22c55e; }}
     .tracker-item .t-value.amber  {{ color: #f59e0b; }}
-    .tracker-item .t-sub {{
-      font-size: 11px; color: #475569; margin-top: 3px;
-    }}
+    .tracker-item .t-sub {{ font-size: 11px; color: #475569; margin-top: 3px; }}
 
-    /* progress bar */
     .progress-wrap {{ margin-top: 4px; }}
     .progress-label-row {{
       display: flex; justify-content: space-between;
@@ -155,7 +156,6 @@ def generate_html(results, password):
       background: linear-gradient(90deg, #6366f1, #818cf8);
       transition: width .8s ease;
     }}
-
     .fy-note {{
       font-size: 12px; color: #475569; margin-top: 14px;
       padding-top: 14px; border-top: 1px solid #1e2235;
@@ -173,8 +173,7 @@ def generate_html(results, password):
     .input-row input:focus {{ border-color: #6366f1; }}
     .input-row button {{
       padding: 8px 18px; background: #6366f1; border: none;
-      border-radius: 8px; color: #fff; font-size: 13px;
-      font-weight: 500; cursor: pointer;
+      border-radius: 8px; color: #fff; font-size: 13px; font-weight: 500; cursor: pointer;
     }}
     .input-row button:hover {{ background: #4f46e5; }}
 
@@ -206,8 +205,7 @@ def generate_html(results, password):
 
     footer {{
       text-align: center; padding: 24px;
-      font-size: 12px; color: #334155;
-      border-top: 1px solid #1e2235;
+      font-size: 12px; color: #334155; border-top: 1px solid #1e2235;
     }}
 
     @media (max-width: 600px) {{
@@ -264,14 +262,13 @@ def generate_html(results, password):
   </header>
 
   <main>
-
     <!-- Personal Tracker -->
     <div class="tracker-card">
       <div class="tracker-title">Personal tracker</div>
 
       <div class="input-row">
         <label>Your priority date</label>
-        <input type="date" id="my-date" value="2009-07-05">
+        <input type="date" id="my-date" value="">
         <button onclick="recalc()">Recalculate</button>
       </div>
 
@@ -345,180 +342,158 @@ def generate_html(results, password):
       </table>
     </div>
   </main>
-
   <footer>Data sourced from travel.state.gov &nbsp;·&nbsp; Auto-updated monthly</footer>
 </div>
 
 <script>
-const HASH       = "{pw_hash}";
+const HASH        = "{pw_hash}";
 const SESSION_KEY = "vb_auth";
 const TABLE_DATA  = {table_data};
+const ENC_DATE    = {enc_js};
+
+/* ── XOR decrypt ── */
+function xorDecrypt(arr, key) {{
+  return arr.map((n, i) => String.fromCharCode(n ^ key.charCodeAt(i % key.length))).join("");
+}}
+
+/* ── Load priority date after login ── */
+function loadPriorityDate() {{
+  if (!ENC_DATE.length) return;
+  const date = xorDecrypt(ENC_DATE, "{pw_hash}");
+  if (/^\d{{4}}-\d{{2}}-\d{{2}}$/.test(date)) {{
+    document.getElementById("my-date").value = date;
+  }}
+}}
 
 /* ── Auth ── */
 async function sha256(str) {{
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }}
+
 async function checkPw() {{
-  const hash = await sha256(document.getElementById("pw-input").value);
+  const val  = document.getElementById("pw-input").value;
+  const hash = await sha256(val);
   if (hash === HASH) {{
-    sessionStorage.setItem(SESSION_KEY,"1");
-    document.getElementById("login-overlay").style.display="none";
-    document.getElementById("main-content").style.display="block";
+    sessionStorage.setItem(SESSION_KEY, "1");
+    document.getElementById("login-overlay").style.display = "none";
+    document.getElementById("main-content").style.display  = "block";
+    loadPriorityDate();
     init();
   }} else {{
-    document.getElementById("pw-error").textContent="Incorrect password.";
-    document.getElementById("pw-input").value="";
+    document.getElementById("pw-error").textContent = "Incorrect password.";
+    document.getElementById("pw-input").value = "";
   }}
 }}
-if (sessionStorage.getItem(SESSION_KEY)==="1") {{
-  document.getElementById("login-overlay").style.display="none";
-  document.getElementById("main-content").style.display="block";
-  window.addEventListener("DOMContentLoaded", init);
+
+/* Auto-restore session */
+if (sessionStorage.getItem(SESSION_KEY) === "1") {{
+  document.getElementById("login-overlay").style.display = "none";
+  document.getElementById("main-content").style.display  = "block";
+  window.addEventListener("DOMContentLoaded", () => {{
+    loadPriorityDate();
+    init();
+  }});
 }}
 
 /* ── Helpers ── */
 function parseDate(s) {{
-  if (!s || s==="C" || s==="U" || s==="N/A" || s.startsWith("ERROR")) return null;
+  if (!s || s === "C" || s === "U" || s === "N/A" || s.startsWith("ERROR")) return null;
   const d = new Date(s + "T00:00:00Z");
   return isNaN(d) ? null : d;
 }}
-function fmtDate(d) {{
-  if (!d) return "N/A";
-  return d.toISOString().slice(0,10);
-}}
-function diffDays(a, b) {{
-  return Math.round((b - a) / 86400000);
-}}
-function addDays(d, n) {{
-  return new Date(d.getTime() + n * 86400000);
-}}
-function fiscalYear(d) {{
-  return d.getMonth() >= 9 ? d.getFullYear()+1 : d.getFullYear();
-}}
+function fmtDate(d)      {{ return d ? d.toISOString().slice(0, 10) : "N/A"; }}
+function diffDays(a, b)  {{ return Math.round((b - a) / 86400000); }}
+function addDays(d, n)   {{ return new Date(d.getTime() + n * 86400000); }}
+function fiscalYear(d)   {{ return d.getMonth() >= 9 ? d.getFullYear() + 1 : d.getFullYear(); }}
 
 /* ── Build table ── */
 function buildTable(myDate) {{
   const tbody = document.getElementById("data-tbody");
   tbody.innerHTML = "";
   TABLE_DATA.forEach(r => {{
-    const fa = parseDate(r.final_action_date);
+    const fa        = parseDate(r.final_action_date);
     const highlight = myDate && fa && fa >= myDate;
-    const tr = document.createElement("tr");
+    const tr        = document.createElement("tr");
     if (highlight) tr.className = "highlight-row";
-
-    const faCell  = fa  ? r.final_action_date : r.final_action_date;
-    const ffCell  = r.dates_for_filing;
-    const isSpecialFA = !parseDate(r.final_action_date) && r.final_action_date !== "N/A";
-    const isSpecialFF = !parseDate(r.dates_for_filing)  && r.dates_for_filing  !== "N/A";
-
+    const sfA = !parseDate(r.final_action_date) && r.final_action_date !== "N/A";
+    const sfF = !parseDate(r.dates_for_filing)  && r.dates_for_filing  !== "N/A";
     tr.innerHTML = `
       <td class="bulletin-col">${{r.bulletin}}</td>
       <td>${{r.release_date}}</td>
-      <td class="${{isSpecialFA ? 'special' : ''}}">${{r.final_action_date}}</td>
-      <td class="${{isSpecialFF ? 'special' : ''}}">${{r.dates_for_filing}}</td>`;
+      <td class="${{sfA ? "special" : ""}}">${{r.final_action_date}}</td>
+      <td class="${{sfF ? "special" : ""}}">${{r.dates_for_filing}}</td>`;
     tbody.appendChild(tr);
   }});
 }}
 
-/* ── Tracker calc ── */
+/* ── Tracker ── */
 function recalc() {{
   const myDateStr = document.getElementById("my-date").value;
   const myDate    = myDateStr ? new Date(myDateStr + "T00:00:00Z") : null;
 
   document.getElementById("tr-mydate").textContent = myDateStr || "—";
 
-  // Latest final action & filing dates
-  const latestFA  = TABLE_DATA.map(r=>parseDate(r.final_action_date)).find(d=>d!==null);
-  const latestFF  = TABLE_DATA.map(r=>parseDate(r.dates_for_filing)).find(d=>d!==null);
-  const latestBulletinFA = TABLE_DATA.find(r=>parseDate(r.final_action_date)!==null);
-  const latestBulletinFF = TABLE_DATA.find(r=>parseDate(r.dates_for_filing)!==null);
+  const latestFA         = TABLE_DATA.map(r => parseDate(r.final_action_date)).find(d => d !== null);
+  const latestFF         = TABLE_DATA.map(r => parseDate(r.dates_for_filing)).find(d => d !== null);
+  const latestBulletinFA = TABLE_DATA.find(r => parseDate(r.final_action_date) !== null);
+  const latestBulletinFF = TABLE_DATA.find(r => parseDate(r.dates_for_filing)  !== null);
 
-  document.getElementById("tr-final").textContent =
-    latestFA ? fmtDate(latestFA) : (TABLE_DATA[0]?.final_action_date || "—");
-  document.getElementById("tr-final-bulletin").textContent =
-    latestBulletinFA ? latestBulletinFA.bulletin : "";
+  document.getElementById("tr-final").textContent          = latestFA ? fmtDate(latestFA) : (TABLE_DATA[0]?.final_action_date || "—");
+  document.getElementById("tr-final-bulletin").textContent = latestBulletinFA?.bulletin || "";
+  document.getElementById("tr-filing").textContent         = latestFF ? fmtDate(latestFF) : (TABLE_DATA[0]?.dates_for_filing || "—");
+  document.getElementById("tr-filing-bulletin").textContent= latestBulletinFF?.bulletin || "";
 
-  document.getElementById("tr-filing").textContent =
-    latestFF ? fmtDate(latestFF) : (TABLE_DATA[0]?.dates_for_filing || "—");
-  document.getElementById("tr-filing-bulletin").textContent =
-    latestBulletinFF ? latestBulletinFF.bulletin : "";
-
-  // 6-month average advance (Final Action)
-  const faPoints = TABLE_DATA
-    .map(r=>parseDate(r.final_action_date))
-    .filter(d=>d!==null)
-    .slice(0, 6);
-
+  const faPoints = TABLE_DATA.map(r => parseDate(r.final_action_date)).filter(d => d !== null).slice(0, 6);
   let avg6 = null;
   if (faPoints.length >= 2) {{
-    const totalAdvance = diffDays(faPoints[faPoints.length-1], faPoints[0]);
-    avg6 = Math.round(totalAdvance / (faPoints.length - 1));
+    avg6 = Math.round(diffDays(faPoints[faPoints.length - 1], faPoints[0]) / (faPoints.length - 1));
   }}
-  document.getElementById("tr-avg6").textContent =
-    avg6 !== null ? avg6 + " days/mo" : "—";
+  document.getElementById("tr-avg6").textContent = avg6 !== null ? avg6 + " days/mo" : "—";
 
   if (myDate && latestFA) {{
-    // Days remaining
     const gapDays = diffDays(latestFA, myDate);
-    document.getElementById("tr-days").textContent =
-      gapDays > 0 ? gapDays + " days" : "Reached!";
+    document.getElementById("tr-days").textContent = gapDays > 0 ? gapDays + " days" : "Reached!";
 
-    // Est. approval at avg speed
     if (avg6 && avg6 > 0 && gapDays > 0) {{
-      const monthsNeeded = gapDays / avg6;
-      const estAvg = addDays(new Date(), monthsNeeded * 30.44);
-      document.getElementById("tr-est-avg").textContent = fmtDate(estAvg);
-      document.getElementById("tr-est-avg-sub").textContent =
-        `at ${{avg6}} days/month (6-mo avg)`;
+      document.getElementById("tr-est-avg").textContent     = fmtDate(addDays(new Date(), (gapDays / avg6) * 30.44));
+      document.getElementById("tr-est-avg-sub").textContent = `at ${{avg6}} days/month (6-mo avg)`;
     }} else if (gapDays <= 0) {{
-      document.getElementById("tr-est-avg").textContent = "Now eligible";
+      document.getElementById("tr-est-avg").textContent     = "Now eligible";
       document.getElementById("tr-est-avg-sub").textContent = "";
     }} else {{
-      document.getElementById("tr-est-avg").textContent = "—";
+      document.getElementById("tr-est-avg").textContent     = "—";
       document.getElementById("tr-est-avg-sub").textContent = "Not enough data";
     }}
 
-    // Est. approval at 30d/mo
-    if (gapDays > 0) {{
-      const months30 = gapDays / 30;
-      const est30 = addDays(new Date(), months30 * 30.44);
-      document.getElementById("tr-est-30").textContent = fmtDate(est30);
-    }} else {{
-      document.getElementById("tr-est-30").textContent = "Now eligible";
-    }}
+    document.getElementById("tr-est-30").textContent = gapDays > 0
+      ? fmtDate(addDays(new Date(), (gapDays / 30) * 30.44))
+      : "Now eligible";
 
-    // Progress bar: from earliest FA date to myDate
-    const oldest = faPoints[faPoints.length-1];
+    const oldest = faPoints[faPoints.length - 1];
     if (oldest) {{
-      const totalSpan = diffDays(oldest, myDate);
-      const done      = diffDays(oldest, latestFA);
-      const pct       = totalSpan > 0 ? Math.min(100, Math.round(done/totalSpan*100)) : 0;
-      document.getElementById("tr-bar").style.width = pct + "%";
-      document.getElementById("tr-pct").textContent = pct + "%";
-      document.getElementById("tr-fy-note").textContent =
-        `Oldest tracked Final Action date: ${{fmtDate(oldest)}} · Latest: ${{fmtDate(latestFA)}} · Your date: ${{myDateStr}}`;
+      const pct = Math.min(100, Math.round(diffDays(oldest, latestFA) / diffDays(oldest, myDate) * 100));
+      document.getElementById("tr-bar").style.width      = pct + "%";
+      document.getElementById("tr-pct").textContent      = pct + "%";
+      document.getElementById("tr-fy-note").textContent  =
+        `Oldest tracked: ${{fmtDate(oldest)}} · Latest: ${{fmtDate(latestFA)}} · Your date: ${{myDateStr}}`;
     }}
 
-    // Fiscal year
     const fy = fiscalYear(myDate);
-    document.getElementById("tr-fy").textContent = `FY${{fy}} (Oct ${{fy-1}} – Sep ${{fy}})`;
+    document.getElementById("tr-fy").textContent = `FY${{fy}} (Oct ${{fy - 1}} – Sep ${{fy}})`;
 
   }} else {{
-    ["tr-days","tr-est-avg","tr-est-30","tr-fy"].forEach(id=>
-      document.getElementById(id).textContent = "—");
-    document.getElementById("tr-bar").style.width = "0%";
-    document.getElementById("tr-pct").textContent = "—";
-    document.getElementById("tr-fy-note").textContent = "";
+    ["tr-days","tr-est-avg","tr-est-30","tr-fy"].forEach(id => document.getElementById(id).textContent = "—");
+    document.getElementById("tr-bar").style.width      = "0%";
+    document.getElementById("tr-pct").textContent      = "—";
+    document.getElementById("tr-fy-note").textContent  = "";
     document.getElementById("tr-est-avg-sub").textContent = "";
   }}
 
   buildTable(myDate);
 }}
 
-function init() {{
-  recalc();
-}}
+function init() {{ recalc(); }}
 </script>
 </body>
 </html>"""
@@ -526,9 +501,10 @@ function init() {{
 
 
 if __name__ == "__main__":
-    password = os.environ.get("PAGE_PASSWORD", "changeme")
-    results = main(n_months=12)
-    html = generate_html(results, password)
+    password      = os.environ.get("PAGE_PASSWORD", "changeme")
+    priority_date = os.environ.get("PRIORITY_DATE", "")
+    results       = main(n_months=12)
+    html          = generate_html(results, password, priority_date)
     os.makedirs("docs", exist_ok=True)
     with open("docs/index.html", "w", encoding="utf-8") as f:
         f.write(html)
