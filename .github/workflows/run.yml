@@ -6,6 +6,15 @@ on:
     - cron: '0 18 8-18 * *'
     - cron: '0 20 8-18 * *'
   workflow_dispatch:
+    inputs:
+      full_refresh:
+        description: 'Full refresh — re-fetch all 12 months from scratch'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -26,8 +35,15 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4 python-dateutil
 
+      - name: Full refresh — clear cache
+        if: ${{ github.event.inputs.full_refresh == 'true' }}
+        run: |
+          echo "Full refresh requested — clearing data.json"
+          rm -f data.json
+
       - name: Check if this month bulletin is available and not yet captured
         id: check
+        if: ${{ github.event.inputs.full_refresh != 'true' }}
         run: |
           python - <<'PYEOF'
           import datetime, requests
@@ -35,7 +51,7 @@ jobs:
           now           = datetime.datetime.utcnow()
           current_month = now.strftime("%B").lower()
           current_year  = now.year
-          label         = now.strftime("%B %Y")   # e.g. "April 2026"
+          label         = now.strftime("%B %Y")
 
           url = (
               f"https://travel.state.gov/content/travel/en/legal/visa-law0/"
@@ -48,7 +64,6 @@ jobs:
                   headers={"User-Agent": "Mozilla/5.0"})
 
               if r.status_code == 200 and "F4" in r.text:
-                  # Bulletin is live — check if we already scraped it
                   try:
                       with open("docs/index.html", "r", encoding="utf-8") as f:
                           existing = f.read()
@@ -81,11 +96,10 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/index.html
+          git add docs/index.html data.json
           git diff --cached --quiet || git commit -m "chore: update F4 China visa dates"
           git push
 
       - name: Log skip reason
         if: ${{ hashFiles('skip.txt') }}
-        run: |
-          echo "Skipped: $(cat skip.txt)"
+        run: echo "Skipped — $(cat skip.txt)"
