@@ -1,13 +1,12 @@
 """
 Visa Bulletin Scraper - F4 Category, China (mainland born)
-Fetches the last 12 months of bulletins and extracts:
-  - Final Action Date (Table A)
-  - Date for Filing (Table B)
-for the F4 family preference category, China column.
+Fetches only missing months, caches results in data.json.
 """
 
 import re
 import sys
+import json
+import os
 from datetime import date, datetime
 
 try:
@@ -19,8 +18,9 @@ except ImportError:
     import requests
     from bs4 import BeautifulSoup
 
-BASE_URL = "https://travel.state.gov"
-INDEX_URL = f"{BASE_URL}/content/travel/en/legal/visa-law0/visa-bulletin.html"
+BASE_URL   = "https://travel.state.gov"
+INDEX_URL  = f"{BASE_URL}/content/travel/en/legal/visa-law0/visa-bulletin.html"
+CACHE_FILE = "data.json"
 
 MONTH_NAMES = {
     "january": 1, "february": 2, "march": 3, "april": 4,
@@ -37,10 +37,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; VisaBulletinScraper/1.0)"}
 
 
 def parse_priority_date(raw):
-    """Convert ddMMMYY or ddMMMYYYY (e.g. 08JUN08 or 08JUN2008) to YYYY-MM-DD.
-    Returns raw string unchanged if it cannot be parsed (e.g. 'C', 'U', 'N/A')."""
     raw = raw.strip()
-    # Match formats like 08JUN08 or 08JUN2008
     m = re.match(r"^(\d{1,2})([A-Z]{3})(\d{2,4})$", raw.upper())
     if m:
         day, mon, yr = int(m.group(1)), m.group(2), m.group(3)
@@ -54,6 +51,24 @@ def parse_priority_date(raw):
             except ValueError:
                 pass
     return raw
+
+
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"Loaded {len(data)} cached entries from {CACHE_FILE}")
+        return {(r["year"], r["month"]): r for r in data}
+    return {}
+
+
+def save_cache(cache_dict):
+    records = sorted(cache_dict.values(),
+                     key=lambda r: date(r["year"], r["month"], 1),
+                     reverse=True)
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2)
+    print(f"Saved {len(records)} entries to {CACHE_FILE}")
 
 
 def get_bulletin_links(n_months=12):
@@ -71,18 +86,15 @@ def get_bulletin_links(n_months=12):
                 month_num = MONTH_NAMES.get(month_name.lower())
                 if month_num:
                     full_url = BASE_URL + href if href.startswith("/") else href
-                    # Format label as "April 2026"
-                    label = f"{month_name.capitalize()} {year}"
                     links.append({
-                        "label": label,
-                        "url": full_url,
-                        "year": year,
-                        "month": month_num,
+                        "label":    f"{month_name.capitalize()} {year}",
+                        "url":      full_url,
+                        "year":     year,
+                        "month":    month_num,
                         "sort_key": date(year, month_num, 1),
                     })
 
-    seen = set()
-    unique = []
+    seen, unique = set(), []
     for item in links:
         key = (item["year"], item["month"])
         if key not in seen:
@@ -94,38 +106,27 @@ def get_bulletin_links(n_months=12):
 
 
 def get_release_date(soup):
-    """Extract the publication date from the bulletin page.
-    Looks for patterns like 'CA/VO: March 4, 2026' or similar date lines."""
     text = soup.get_text(" ", strip=True)
-
-    # Pattern: CA/VO: Month Day, Year
     m = re.search(r"CA/VO[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})", text)
     if m:
         try:
             raw = m.group(1).replace(",", "").strip()
-            dt = datetime.strptime(raw, "%B %d %Y")
-            return dt.strftime("%Y-%m-%d")
+            return datetime.strptime(raw, "%B %d %Y").strftime("%Y-%m-%d")
         except ValueError:
             pass
-
-    # Fallback: look for any "Month DD, YYYY" near the bottom
     matches = re.findall(r"([A-Za-z]+ \d{1,2}, \d{4})", text)
-    if matches:
-        for candidate in reversed(matches):
-            try:
-                dt = datetime.strptime(candidate, "%B %d, %Y")
-                return dt.strftime("%Y-%m-%d")
-            except ValueError:
-                continue
-
+    for candidate in reversed(matches):
+        try:
+            return datetime.strptime(candidate, "%B %d, %Y").strftime("%Y-%m-%d")
+        except ValueError:
+            continue
     return "N/A"
 
 
 def find_china_f4(soup, table_type):
     elements = soup.find_all(["h1", "h2", "h3", "h4", "p", "b", "strong", "table"])
     current_section = None
-    final_action_tables = []
-    filing_tables = []
+    final_action_tables, filing_tables = [], []
 
     for el in elements:
         text = el.get_text(" ", strip=True).upper()
@@ -142,30 +143,26 @@ def find_china_f4(soup, table_type):
             elif "EMPLOYMENT" in text and ("FINAL ACTION" in text or "DATES FOR FILING" in text):
                 current_section = None
 
-    target_tables = final_action_tables if table_type == "final_action" else filing_tables
+    target = final_action_tables if table_type == "final_action" else filing_tables
 
-    for table in target_tables:
+    for table in target:
         rows = table.find_all("tr")
         china_col = None
         for row in rows:
             headers = row.find_all(["th", "td"])
-            header_texts = [h.get_text(" ", strip=True).upper() for h in headers]
-            for i, ht in enumerate(header_texts):
-                if "CHINA" in ht:
+            for i, h in enumerate(headers):
+                if "CHINA" in h.get_text(" ", strip=True).upper():
                     china_col = i
                     break
             if china_col is not None:
                 break
-
         if china_col is None:
             continue
-
         for row in rows:
             cells = row.find_all(["th", "td"])
             if not cells:
                 continue
-            first_cell = cells[0].get_text(" ", strip=True).upper()
-            if re.match(r"F\s*4", first_cell):
+            if re.match(r"F\s*4", cells[0].get_text(" ", strip=True).upper()):
                 if china_col < len(cells):
                     return cells[china_col].get_text(" ", strip=True)
 
@@ -177,17 +174,13 @@ def scrape_bulletin(bulletin):
         resp = requests.get(bulletin["url"], headers=HEADERS, timeout=30)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-
-        raw_final  = find_china_f4(soup, "final_action")
-        raw_filing = find_china_f4(soup, "dates_for_filing")
-
         return {
             "bulletin":          bulletin["label"],
             "month":             bulletin["month"],
             "year":              bulletin["year"],
             "release_date":      get_release_date(soup),
-            "final_action_date": parse_priority_date(raw_final),
-            "dates_for_filing":  parse_priority_date(raw_filing),
+            "final_action_date": parse_priority_date(find_china_f4(soup, "final_action")),
+            "dates_for_filing":  parse_priority_date(find_china_f4(soup, "dates_for_filing")),
             "url":               bulletin["url"],
         }
     except Exception as e:
@@ -215,20 +208,28 @@ def to_markdown_table(results):
 
 
 def main(n_months=12):
-    print(f"Fetching last {n_months} Visa Bulletins for F4 / China (mainland born)...")
+    cache = load_cache()
     bulletins = get_bulletin_links(n_months)
-    if not bulletins:
-        print("ERROR: Could not find any bulletin links.")
-        sys.exit(1)
 
-    print(f"Found {len(bulletins)} bulletins. Scraping...")
-    results = []
-    for i, b in enumerate(bulletins, 1):
-        print(f"  [{i}/{len(bulletins)}] {b['label']} ...")
-        result = scrape_bulletin(b)
-        results.append(result)
+    fetched = 0
+    for b in bulletins:
+        key = (b["year"], b["month"])
+        if key in cache:
+            print(f"  [cached] {b['label']}")
+        else:
+            print(f"  [fetch]  {b['label']} ...")
+            result = scrape_bulletin(b)
+            cache[key] = result
+            fetched += 1
 
-    return results
+    save_cache(cache)
+    print(f"Done — {fetched} new, {len(bulletins) - fetched} from cache")
+
+    # Return sorted newest-first, limited to n_months
+    results = sorted(cache.values(),
+                     key=lambda r: date(r["year"], r["month"], 1),
+                     reverse=True)
+    return results[:n_months]
 
 
 if __name__ == "__main__":
