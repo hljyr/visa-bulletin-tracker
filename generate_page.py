@@ -405,7 +405,6 @@ function parseDate(s) {{
 function fmtDate(d)      {{ return d ? d.toISOString().slice(0, 10) : "N/A"; }}
 function diffDays(a, b)  {{ return Math.round((b - a) / 86400000); }}
 function addDays(d, n)   {{ return new Date(d.getTime() + n * 86400000); }}
-function fiscalYear(d)   {{ return d.getMonth() >= 9 ? d.getFullYear() + 1 : d.getFullYear(); }}
 
 /* ── Build table ── */
 function buildTable(myDate) {{
@@ -479,7 +478,8 @@ function recalc() {{
         `Oldest tracked: ${{fmtDate(oldest)}} · Latest: ${{fmtDate(latestFA)}} · Your date: ${{myDateStr}}`;
     }}
 
-    const fy = fiscalYear(myDate);
+    const today = new Date();
+    const fy = today.getMonth() >= 9 ? today.getFullYear() + 1 : today.getFullYear();
     document.getElementById("tr-fy").textContent = `FY${{fy}} (Oct ${{fy - 1}} – Sep ${{fy}})`;
 
   }} else {{
