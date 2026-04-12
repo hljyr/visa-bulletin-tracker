@@ -73,6 +73,7 @@ jobs:
         if: ${{ !hashFiles('skip.txt') }}
         env:
           PAGE_PASSWORD: ${{ secrets.PAGE_PASSWORD }}
+          PRIORITY_DATE: ${{ secrets.PRIORITY_DATE }}
         run: python generate_page.py
 
       - name: Commit and push
