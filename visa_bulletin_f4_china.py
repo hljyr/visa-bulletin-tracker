@@ -62,13 +62,14 @@ def load_cache():
     return {}
 
 
-def save_cache(cache_dict):
+def save_cache(cache_dict, n_months=12):
     records = sorted(cache_dict.values(),
                      key=lambda r: date(r["year"], r["month"], 1),
                      reverse=True)
+    records = records[:n_months]  # keep only latest 12
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2)
-    print(f"Saved {len(records)} entries to {CACHE_FILE}")
+    print(f"Saved {len(records)} entries to {CACHE_FILE} (latest {n_months} months only)")
 
 
 def get_bulletin_links(n_months=12):
