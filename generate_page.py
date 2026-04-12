@@ -1,0 +1,535 @@
+"""
+Generates a styled, password-protected HTML dashboard
+from the visa bulletin scraper results, with a personal tracker section.
+"""
+
+import os
+import hashlib
+import json
+from datetime import datetime, timezone
+from visa_bulletin_f4_china import main
+
+def sha256(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+def generate_html(results, password):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    pw_hash = sha256(password)
+
+    # Build JSON data for JS to consume
+    table_data = json.dumps([
+        {
+            "bulletin":          r["bulletin"],
+            "release_date":      r["release_date"],
+            "final_action_date": r["final_action_date"],
+            "dates_for_filing":  r["dates_for_filing"],
+        }
+        for r in results
+    ])
+
+    latest_bulletin = results[0]["bulletin"] if results else "N/A"
+    month_count     = len(results)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>F4 China Visa Priority Dates</title>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117; color: #e2e8f0; min-height: 100vh;
+    }}
+
+    /* ── Login ── */
+    #login-overlay {{
+      position: fixed; inset: 0; background: #0f1117;
+      display: flex; align-items: center; justify-content: center; z-index: 999;
+    }}
+    .login-box {{
+      background: #1a1d27; border: 1px solid #2d3148;
+      border-radius: 16px; padding: 40px 48px; width: 360px; text-align: center;
+    }}
+    .login-box h2 {{ font-size: 20px; font-weight: 600; color: #e2e8f0; margin-bottom: 6px; }}
+    .login-box p  {{ font-size: 13px; color: #64748b; margin-bottom: 28px; }}
+    .login-box input {{
+      width: 100%; padding: 12px 16px;
+      background: #0f1117; border: 1px solid #2d3148;
+      border-radius: 8px; color: #e2e8f0; font-size: 15px;
+      outline: none; margin-bottom: 12px; transition: border-color .2s;
+    }}
+    .login-box input:focus {{ border-color: #6366f1; }}
+    .login-box button {{
+      width: 100%; padding: 12px; background: #6366f1; border: none;
+      border-radius: 8px; color: #fff; font-size: 15px; font-weight: 500;
+      cursor: pointer; transition: background .2s;
+    }}
+    .login-box button:hover {{ background: #4f46e5; }}
+    .login-error {{ font-size: 13px; color: #f87171; margin-top: 10px; min-height: 18px; }}
+
+    /* ── Layout ── */
+    #main-content {{ display: none; }}
+    header {{
+      background: linear-gradient(135deg, #1e1b4b 0%, #1a1d27 100%);
+      border-bottom: 1px solid #2d3148; padding: 32px 40px 28px;
+    }}
+    .header-top {{
+      display: flex; align-items: flex-start;
+      justify-content: space-between; flex-wrap: wrap; gap: 16px;
+    }}
+    header h1 {{ font-size: 24px; font-weight: 700; color: #e2e8f0; margin-bottom: 4px; }}
+    header .subtitle {{ font-size: 14px; color: #64748b; }}
+    .badge {{
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #1e293b; border: 1px solid #2d3148;
+      border-radius: 20px; padding: 6px 14px; font-size: 12px; color: #94a3b8;
+    }}
+    .badge-dot {{
+      width: 7px; height: 7px; border-radius: 50%; background: #22c55e;
+      animation: pulse 2s infinite;
+    }}
+    @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:.4}} }}
+
+    .stats-row {{ display: flex; gap: 16px; margin-top: 24px; flex-wrap: wrap; }}
+    .stat-card {{
+      background: #0f1117; border: 1px solid #2d3148;
+      border-radius: 10px; padding: 14px 20px; flex: 1; min-width: 140px;
+    }}
+    .stat-card .label {{
+      font-size: 11px; color: #64748b;
+      text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px;
+    }}
+    .stat-card .value {{ font-size: 18px; font-weight: 600; color: #e2e8f0; }}
+    .stat-card .value.accent {{ color: #818cf8; }}
+    .stat-card .value.green  {{ color: #22c55e; }}
+    .stat-card .value.amber  {{ color: #f59e0b; }}
+
+    main {{ padding: 32px 40px; }}
+
+    /* ── Tracker ── */
+    .tracker-card {{
+      background: #1a1d27; border: 1px solid #2d3148;
+      border-radius: 12px; padding: 24px 28px; margin-bottom: 28px;
+    }}
+    .tracker-title {{
+      font-size: 13px; font-weight: 600; color: #64748b;
+      text-transform: uppercase; letter-spacing: .05em; margin-bottom: 20px;
+    }}
+    .tracker-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px; margin-bottom: 24px;
+    }}
+    .tracker-item {{
+      background: #0f1117; border: 1px solid #2d3148;
+      border-radius: 10px; padding: 14px 18px;
+    }}
+    .tracker-item .t-label {{
+      font-size: 11px; color: #64748b;
+      text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px;
+    }}
+    .tracker-item .t-value {{
+      font-size: 16px; font-weight: 600; color: #e2e8f0;
+    }}
+    .tracker-item .t-value.purple {{ color: #818cf8; }}
+    .tracker-item .t-value.green  {{ color: #22c55e; }}
+    .tracker-item .t-value.amber  {{ color: #f59e0b; }}
+    .tracker-item .t-sub {{
+      font-size: 11px; color: #475569; margin-top: 3px;
+    }}
+
+    /* progress bar */
+    .progress-wrap {{ margin-top: 4px; }}
+    .progress-label-row {{
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: #64748b; margin-bottom: 6px;
+    }}
+    .progress-bg {{
+      background: #0f1117; border: 1px solid #2d3148;
+      border-radius: 6px; height: 10px; overflow: hidden;
+    }}
+    .progress-fill {{
+      height: 100%; border-radius: 6px;
+      background: linear-gradient(90deg, #6366f1, #818cf8);
+      transition: width .8s ease;
+    }}
+
+    .fy-note {{
+      font-size: 12px; color: #475569; margin-top: 14px;
+      padding-top: 14px; border-top: 1px solid #1e2235;
+    }}
+
+    .input-row {{
+      display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+    }}
+    .input-row label {{ font-size: 13px; color: #94a3b8; }}
+    .input-row input {{
+      background: #0f1117; border: 1px solid #2d3148;
+      border-radius: 8px; color: #e2e8f0; font-size: 14px;
+      padding: 8px 12px; outline: none; transition: border-color .2s;
+    }}
+    .input-row input:focus {{ border-color: #6366f1; }}
+    .input-row button {{
+      padding: 8px 18px; background: #6366f1; border: none;
+      border-radius: 8px; color: #fff; font-size: 13px;
+      font-weight: 500; cursor: pointer;
+    }}
+    .input-row button:hover {{ background: #4f46e5; }}
+
+    /* ── Table ── */
+    .table-wrapper {{
+      background: #1a1d27; border: 1px solid #2d3148;
+      border-radius: 12px; overflow: hidden;
+    }}
+    .table-header {{
+      padding: 16px 24px; border-bottom: 1px solid #2d3148;
+      font-size: 13px; font-weight: 600; color: #94a3b8;
+      text-transform: uppercase; letter-spacing: .05em;
+    }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    thead th {{
+      padding: 12px 24px; background: #0f1117;
+      font-size: 12px; font-weight: 600; color: #64748b;
+      text-transform: uppercase; letter-spacing: .05em;
+      text-align: left; border-bottom: 1px solid #2d3148;
+    }}
+    tbody tr {{ border-bottom: 1px solid #1e2235; transition: background .15s; }}
+    tbody tr:last-child {{ border-bottom: none; }}
+    tbody tr:hover {{ background: #1e2235; }}
+    tbody td {{ padding: 14px 24px; font-size: 14px; color: #cbd5e1; }}
+    td.bulletin-col {{ font-weight: 600; color: #e2e8f0; }}
+    td.special {{ color: #818cf8; font-weight: 600; }}
+    tr.highlight-row td {{ background: #1e1b4b !important; color: #a5b4fc; }}
+    tr.highlight-row td.bulletin-col {{ color: #c7d2fe; font-weight: 700; }}
+
+    footer {{
+      text-align: center; padding: 24px;
+      font-size: 12px; color: #334155;
+      border-top: 1px solid #1e2235;
+    }}
+
+    @media (max-width: 600px) {{
+      header, main {{ padding: 20px 16px; }}
+      thead th, tbody td {{ padding: 10px 12px; font-size: 13px; }}
+    }}
+  </style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login-overlay">
+  <div class="login-box">
+    <h2>Visa Bulletin Tracker</h2>
+    <p>Enter your password to continue</p>
+    <input type="password" id="pw-input" placeholder="Password"
+           onkeydown="if(event.key==='Enter') checkPw()">
+    <button onclick="checkPw()">Sign in</button>
+    <div class="login-error" id="pw-error"></div>
+  </div>
+</div>
+
+<!-- Main -->
+<div id="main-content">
+  <header>
+    <div class="header-top">
+      <div>
+        <h1>F4 China Visa Priority Dates</h1>
+        <div class="subtitle">Family preference · China (mainland born) · Last 12 months</div>
+      </div>
+      <div class="badge">
+        <span class="badge-dot"></span>
+        Updated {now}
+      </div>
+    </div>
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="label">Category</div>
+        <div class="value accent">F4</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Country</div>
+        <div class="value">China</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Months tracked</div>
+        <div class="value">{month_count}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Latest bulletin</div>
+        <div class="value accent">{latest_bulletin}</div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- Personal Tracker -->
+    <div class="tracker-card">
+      <div class="tracker-title">Personal tracker</div>
+
+      <div class="input-row">
+        <label>Your priority date</label>
+        <input type="date" id="my-date" value="2009-07-05">
+        <button onclick="recalc()">Recalculate</button>
+      </div>
+
+      <div class="tracker-grid">
+        <div class="tracker-item">
+          <div class="t-label">申请日期 · Priority date</div>
+          <div class="t-value purple" id="tr-mydate">—</div>
+        </div>
+        <div class="tracker-item">
+          <div class="t-label">表A Final Action date (latest)</div>
+          <div class="t-value" id="tr-final">—</div>
+          <div class="t-sub" id="tr-final-bulletin"></div>
+        </div>
+        <div class="tracker-item">
+          <div class="t-label">表B Filing date (latest)</div>
+          <div class="t-value" id="tr-filing">—</div>
+          <div class="t-sub" id="tr-filing-bulletin"></div>
+        </div>
+        <div class="tracker-item">
+          <div class="t-label">剩余天数 · Days remaining</div>
+          <div class="t-value amber" id="tr-days">—</div>
+          <div class="t-sub">until Final Action reaches your date</div>
+        </div>
+        <div class="tracker-item">
+          <div class="t-label">6-month avg advance</div>
+          <div class="t-value green" id="tr-avg6">—</div>
+          <div class="t-sub">days per month (表A)</div>
+        </div>
+        <div class="tracker-item">
+          <div class="t-label">预计批准 · Est. approval (avg speed)</div>
+          <div class="t-value green" id="tr-est-avg">—</div>
+          <div class="t-sub" id="tr-est-avg-sub"></div>
+        </div>
+        <div class="tracker-item">
+          <div class="t-label">预计批准 · Est. approval (30d/mo)</div>
+          <div class="t-value amber" id="tr-est-30">—</div>
+          <div class="t-sub">assuming 30 days/month advance</div>
+        </div>
+        <div class="tracker-item">
+          <div class="t-label">Fiscal year</div>
+          <div class="t-value" id="tr-fy">—</div>
+          <div class="t-sub">Oct – Sep</div>
+        </div>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-label-row">
+          <span>Priority date progress</span>
+          <span id="tr-pct">—</span>
+        </div>
+        <div class="progress-bg">
+          <div class="progress-fill" id="tr-bar" style="width:0%"></div>
+        </div>
+        <div class="fy-note" id="tr-fy-note"></div>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrapper">
+      <div class="table-header">Priority date history</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Bulletin</th>
+            <th>Release Date</th>
+            <th>Final Action Date (China F4)</th>
+            <th>Date for Filing (China F4)</th>
+          </tr>
+        </thead>
+        <tbody id="data-tbody"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <footer>Data sourced from travel.state.gov &nbsp;·&nbsp; Auto-updated monthly</footer>
+</div>
+
+<script>
+const HASH       = "{pw_hash}";
+const SESSION_KEY = "vb_auth";
+const TABLE_DATA  = {table_data};
+
+/* ── Auth ── */
+async function sha256(str) {{
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}}
+async function checkPw() {{
+  const hash = await sha256(document.getElementById("pw-input").value);
+  if (hash === HASH) {{
+    sessionStorage.setItem(SESSION_KEY,"1");
+    document.getElementById("login-overlay").style.display="none";
+    document.getElementById("main-content").style.display="block";
+    init();
+  }} else {{
+    document.getElementById("pw-error").textContent="Incorrect password.";
+    document.getElementById("pw-input").value="";
+  }}
+}}
+if (sessionStorage.getItem(SESSION_KEY)==="1") {{
+  document.getElementById("login-overlay").style.display="none";
+  document.getElementById("main-content").style.display="block";
+  window.addEventListener("DOMContentLoaded", init);
+}}
+
+/* ── Helpers ── */
+function parseDate(s) {{
+  if (!s || s==="C" || s==="U" || s==="N/A" || s.startsWith("ERROR")) return null;
+  const d = new Date(s + "T00:00:00Z");
+  return isNaN(d) ? null : d;
+}}
+function fmtDate(d) {{
+  if (!d) return "N/A";
+  return d.toISOString().slice(0,10);
+}}
+function diffDays(a, b) {{
+  return Math.round((b - a) / 86400000);
+}}
+function addDays(d, n) {{
+  return new Date(d.getTime() + n * 86400000);
+}}
+function fiscalYear(d) {{
+  return d.getMonth() >= 9 ? d.getFullYear()+1 : d.getFullYear();
+}}
+
+/* ── Build table ── */
+function buildTable(myDate) {{
+  const tbody = document.getElementById("data-tbody");
+  tbody.innerHTML = "";
+  TABLE_DATA.forEach(r => {{
+    const fa = parseDate(r.final_action_date);
+    const highlight = myDate && fa && fa >= myDate;
+    const tr = document.createElement("tr");
+    if (highlight) tr.className = "highlight-row";
+
+    const faCell  = fa  ? r.final_action_date : r.final_action_date;
+    const ffCell  = r.dates_for_filing;
+    const isSpecialFA = !parseDate(r.final_action_date) && r.final_action_date !== "N/A";
+    const isSpecialFF = !parseDate(r.dates_for_filing)  && r.dates_for_filing  !== "N/A";
+
+    tr.innerHTML = `
+      <td class="bulletin-col">${{r.bulletin}}</td>
+      <td>${{r.release_date}}</td>
+      <td class="${{isSpecialFA ? 'special' : ''}}">${{r.final_action_date}}</td>
+      <td class="${{isSpecialFF ? 'special' : ''}}">${{r.dates_for_filing}}</td>`;
+    tbody.appendChild(tr);
+  }});
+}}
+
+/* ── Tracker calc ── */
+function recalc() {{
+  const myDateStr = document.getElementById("my-date").value;
+  const myDate    = myDateStr ? new Date(myDateStr + "T00:00:00Z") : null;
+
+  document.getElementById("tr-mydate").textContent = myDateStr || "—";
+
+  // Latest final action & filing dates
+  const latestFA  = TABLE_DATA.map(r=>parseDate(r.final_action_date)).find(d=>d!==null);
+  const latestFF  = TABLE_DATA.map(r=>parseDate(r.dates_for_filing)).find(d=>d!==null);
+  const latestBulletinFA = TABLE_DATA.find(r=>parseDate(r.final_action_date)!==null);
+  const latestBulletinFF = TABLE_DATA.find(r=>parseDate(r.dates_for_filing)!==null);
+
+  document.getElementById("tr-final").textContent =
+    latestFA ? fmtDate(latestFA) : (TABLE_DATA[0]?.final_action_date || "—");
+  document.getElementById("tr-final-bulletin").textContent =
+    latestBulletinFA ? latestBulletinFA.bulletin : "";
+
+  document.getElementById("tr-filing").textContent =
+    latestFF ? fmtDate(latestFF) : (TABLE_DATA[0]?.dates_for_filing || "—");
+  document.getElementById("tr-filing-bulletin").textContent =
+    latestBulletinFF ? latestBulletinFF.bulletin : "";
+
+  // 6-month average advance (Final Action)
+  const faPoints = TABLE_DATA
+    .map(r=>parseDate(r.final_action_date))
+    .filter(d=>d!==null)
+    .slice(0, 6);
+
+  let avg6 = null;
+  if (faPoints.length >= 2) {{
+    const totalAdvance = diffDays(faPoints[faPoints.length-1], faPoints[0]);
+    avg6 = Math.round(totalAdvance / (faPoints.length - 1));
+  }}
+  document.getElementById("tr-avg6").textContent =
+    avg6 !== null ? avg6 + " days/mo" : "—";
+
+  if (myDate && latestFA) {{
+    // Days remaining
+    const gapDays = diffDays(latestFA, myDate);
+    document.getElementById("tr-days").textContent =
+      gapDays > 0 ? gapDays + " days" : "Reached!";
+
+    // Est. approval at avg speed
+    if (avg6 && avg6 > 0 && gapDays > 0) {{
+      const monthsNeeded = gapDays / avg6;
+      const estAvg = addDays(new Date(), monthsNeeded * 30.44);
+      document.getElementById("tr-est-avg").textContent = fmtDate(estAvg);
+      document.getElementById("tr-est-avg-sub").textContent =
+        `at ${{avg6}} days/month (6-mo avg)`;
+    }} else if (gapDays <= 0) {{
+      document.getElementById("tr-est-avg").textContent = "Now eligible";
+      document.getElementById("tr-est-avg-sub").textContent = "";
+    }} else {{
+      document.getElementById("tr-est-avg").textContent = "—";
+      document.getElementById("tr-est-avg-sub").textContent = "Not enough data";
+    }}
+
+    // Est. approval at 30d/mo
+    if (gapDays > 0) {{
+      const months30 = gapDays / 30;
+      const est30 = addDays(new Date(), months30 * 30.44);
+      document.getElementById("tr-est-30").textContent = fmtDate(est30);
+    }} else {{
+      document.getElementById("tr-est-30").textContent = "Now eligible";
+    }}
+
+    // Progress bar: from earliest FA date to myDate
+    const oldest = faPoints[faPoints.length-1];
+    if (oldest) {{
+      const totalSpan = diffDays(oldest, myDate);
+      const done      = diffDays(oldest, latestFA);
+      const pct       = totalSpan > 0 ? Math.min(100, Math.round(done/totalSpan*100)) : 0;
+      document.getElementById("tr-bar").style.width = pct + "%";
+      document.getElementById("tr-pct").textContent = pct + "%";
+      document.getElementById("tr-fy-note").textContent =
+        `Oldest tracked Final Action date: ${{fmtDate(oldest)}} · Latest: ${{fmtDate(latestFA)}} · Your date: ${{myDateStr}}`;
+    }}
+
+    // Fiscal year
+    const fy = fiscalYear(myDate);
+    document.getElementById("tr-fy").textContent = `FY${{fy}} (Oct ${{fy-1}} – Sep ${{fy}})`;
+
+  }} else {{
+    ["tr-days","tr-est-avg","tr-est-30","tr-fy"].forEach(id=>
+      document.getElementById(id).textContent = "—");
+    document.getElementById("tr-bar").style.width = "0%";
+    document.getElementById("tr-pct").textContent = "—";
+    document.getElementById("tr-fy-note").textContent = "";
+    document.getElementById("tr-est-avg-sub").textContent = "";
+  }}
+
+  buildTable(myDate);
+}}
+
+function init() {{
+  recalc();
+}}
+</script>
+</body>
+</html>"""
+    return html
+
+
+if __name__ == "__main__":
+    password = os.environ.get("PAGE_PASSWORD", "changeme")
+    results = main(n_months=12)
+    html = generate_html(results, password)
+    os.makedirs("docs", exist_ok=True)
+    with open("docs/index.html", "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"Generated docs/index.html ({len(html):,} bytes)")
