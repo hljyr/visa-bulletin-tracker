@@ -8,14 +8,14 @@ for the F4 family preference category, China column.
 
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 
 try:
     import requests
     from bs4 import BeautifulSoup
 except ImportError:
     import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "beautifulsoup4", "python-dateutil", "-q"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "beautifulsoup4", "-q"])
     import requests
     from bs4 import BeautifulSoup
 
@@ -28,7 +28,32 @@ MONTH_NAMES = {
     "september": 9, "october": 10, "november": 11, "december": 12,
 }
 
+MONTH_ABBR = {
+    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+}
+
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; VisaBulletinScraper/1.0)"}
+
+
+def parse_priority_date(raw):
+    """Convert ddMMMYY or ddMMMYYYY (e.g. 08JUN08 or 08JUN2008) to YYYY-MM-DD.
+    Returns raw string unchanged if it cannot be parsed (e.g. 'C', 'U', 'N/A')."""
+    raw = raw.strip()
+    # Match formats like 08JUN08 or 08JUN2008
+    m = re.match(r"^(\d{1,2})([A-Z]{3})(\d{2,4})$", raw.upper())
+    if m:
+        day, mon, yr = int(m.group(1)), m.group(2), m.group(3)
+        month_num = MONTH_ABBR.get(mon)
+        if month_num:
+            year = int(yr)
+            if year < 100:
+                year += 2000 if year <= 30 else 1900
+            try:
+                return date(year, month_num, day).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+    return raw
 
 
 def get_bulletin_links(n_months=12):
@@ -39,7 +64,6 @@ def get_bulletin_links(n_months=12):
     links = []
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        text = a.get_text(strip=True)
         if re.search(r"/visa-bulletin/\d{4}/visa-bulletin-for-", href):
             m = re.search(r"visa-bulletin-for-([a-z]+)-(\d{4})\.html", href)
             if m:
@@ -47,8 +71,10 @@ def get_bulletin_links(n_months=12):
                 month_num = MONTH_NAMES.get(month_name.lower())
                 if month_num:
                     full_url = BASE_URL + href if href.startswith("/") else href
+                    # Format label as "April 2026"
+                    label = f"{month_name.capitalize()} {year}"
                     links.append({
-                        "label": text or f"{month_name.capitalize()} {year}",
+                        "label": label,
                         "url": full_url,
                         "year": year,
                         "month": month_num,
@@ -65,6 +91,34 @@ def get_bulletin_links(n_months=12):
 
     unique.sort(key=lambda x: x["sort_key"], reverse=True)
     return unique[:n_months]
+
+
+def get_release_date(soup):
+    """Extract the publication date from the bulletin page.
+    Looks for patterns like 'CA/VO: March 4, 2026' or similar date lines."""
+    text = soup.get_text(" ", strip=True)
+
+    # Pattern: CA/VO: Month Day, Year
+    m = re.search(r"CA/VO[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})", text)
+    if m:
+        try:
+            raw = m.group(1).replace(",", "").strip()
+            dt = datetime.strptime(raw, "%B %d %Y")
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    # Fallback: look for any "Month DD, YYYY" near the bottom
+    matches = re.findall(r"([A-Za-z]+ \d{1,2}, \d{4})", text)
+    if matches:
+        for candidate in reversed(matches):
+            try:
+                dt = datetime.strptime(candidate, "%B %d, %Y")
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+
+    return "N/A"
 
 
 def find_china_f4(soup, table_type):
@@ -85,7 +139,7 @@ def find_china_f4(soup, table_type):
                 current_section = "FINAL_ACTION"
             elif ("DATES FOR FILING" in text or "DATE FOR FILING" in text) and "FAMIL" in text:
                 current_section = "DATES_FOR_FILING"
-            elif "EMPLOYMENT" in text and ("FINAL ACTION" in text or "DATES FOR FILING" in text or "DATE FOR FILING" in text):
+            elif "EMPLOYMENT" in text and ("FINAL ACTION" in text or "DATES FOR FILING" in text):
                 current_section = None
 
     target_tables = final_action_tables if table_type == "final_action" else filing_tables
@@ -124,36 +178,38 @@ def scrape_bulletin(bulletin):
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        final_action = find_china_f4(soup, "final_action")
-        dates_for_filing = find_china_f4(soup, "dates_for_filing")
+        raw_final  = find_china_f4(soup, "final_action")
+        raw_filing = find_china_f4(soup, "dates_for_filing")
 
         return {
-            "bulletin": bulletin["label"],
-            "month": bulletin["month"],
-            "year": bulletin["year"],
-            "final_action_date": final_action,
-            "dates_for_filing": dates_for_filing,
-            "url": bulletin["url"],
+            "bulletin":          bulletin["label"],
+            "month":             bulletin["month"],
+            "year":              bulletin["year"],
+            "release_date":      get_release_date(soup),
+            "final_action_date": parse_priority_date(raw_final),
+            "dates_for_filing":  parse_priority_date(raw_filing),
+            "url":               bulletin["url"],
         }
     except Exception as e:
         return {
-            "bulletin": bulletin["label"],
-            "month": bulletin["month"],
-            "year": bulletin["year"],
+            "bulletin":          bulletin["label"],
+            "month":             bulletin["month"],
+            "year":              bulletin["year"],
+            "release_date":      "ERROR",
             "final_action_date": f"ERROR: {e}",
-            "dates_for_filing": f"ERROR: {e}",
-            "url": bulletin["url"],
+            "dates_for_filing":  f"ERROR: {e}",
+            "url":               bulletin["url"],
         }
 
 
 def to_markdown_table(results):
     lines = [
-        "| Bulletin | Final Action Date (China F4) | Date for Filing (China F4) |",
-        "|---|---|---|",
+        "| Bulletin | Release Date | Final Action Date (China F4) | Date for Filing (China F4) |",
+        "|---|---|---|---|",
     ]
     for r in results:
         lines.append(
-            f"| {r['bulletin']} | {r['final_action_date']} | {r['dates_for_filing']} |"
+            f"| {r['bulletin']} | {r['release_date']} | {r['final_action_date']} | {r['dates_for_filing']} |"
         )
     return "\n".join(lines)
 
@@ -177,5 +233,4 @@ def main(n_months=12):
 
 if __name__ == "__main__":
     results = main(12)
-    for r in results:
-        print(f"{r['bulletin']}: Final={r['final_action_date']} | Filing={r['dates_for_filing']}")
+    print("\n" + to_markdown_table(results))
