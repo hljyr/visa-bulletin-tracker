@@ -2,7 +2,9 @@ name: Update Visa Bulletin Table
 
 on:
   schedule:
-    - cron: '0 12 8 * *'
+    - cron: '0 15 8-18 * *'
+    - cron: '0 18 8-18 * *'
+    - cron: '0 20 8-18 * *'
   workflow_dispatch:
 
 env:
@@ -24,13 +26,65 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4 python-dateutil
 
-      - name: Run scraper and update README
-        run: python update_readme.py
+      - name: Check if this month bulletin is available and not yet captured
+        id: check
+        run: |
+          python - <<'PYEOF'
+          import datetime, requests
 
-      - name: Commit and push if changed
+          now           = datetime.datetime.utcnow()
+          current_month = now.strftime("%B").lower()
+          current_year  = now.year
+          label         = now.strftime("%B %Y")   # e.g. "April 2026"
+
+          url = (
+              f"https://travel.state.gov/content/travel/en/legal/visa-law0/"
+              f"visa-bulletin/{current_year}/visa-bulletin-for-{current_month}-{current_year}.html"
+          )
+          print(f"Checking bulletin: {url}")
+
+          try:
+              r = requests.get(url, timeout=15,
+                  headers={"User-Agent": "Mozilla/5.0"})
+
+              if r.status_code == 200 and "F4" in r.text:
+                  # Bulletin is live — check if we already scraped it
+                  try:
+                      with open("docs/index.html", "r", encoding="utf-8") as f:
+                          existing = f.read()
+                      if label in existing:
+                          print(f"'{label}' already captured — skipping.")
+                          with open("skip.txt", "w") as f:
+                              f.write("already_captured")
+                      else:
+                          print(f"'{label}' is live and not yet captured — will scrape.")
+                  except FileNotFoundError:
+                      print("No existing page — will generate fresh.")
+              else:
+                  print(f"Bulletin not yet published (HTTP {r.status_code}) — skipping.")
+                  with open("skip.txt", "w") as f:
+                      f.write("not_published")
+
+          except Exception as e:
+              print(f"Request failed ({e}) — will attempt scrape anyway.")
+          PYEOF
+
+      - name: Generate HTML dashboard
+        if: ${{ !hashFiles('skip.txt') }}
+        env:
+          PAGE_PASSWORD: ${{ secrets.PAGE_PASSWORD }}
+        run: python generate_page.py
+
+      - name: Commit and push
+        if: ${{ !hashFiles('skip.txt') }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
+          git add docs/index.html
           git diff --cached --quiet || git commit -m "chore: update F4 China visa dates"
           git push
+
+      - name: Log skip reason
+        if: ${{ hashFiles('skip.txt') }}
+        run: |
+          echo "Skipped: $(cat skip.txt)"
