@@ -41,18 +41,30 @@ jobs:
           echo "Full refresh requested — clearing data.json"
           rm -f data.json
 
-      - name: Check if this month bulletin is available and not yet captured
+      - name: Check if current month bulletin is available and not yet cached
         id: check
         if: ${{ github.event.inputs.full_refresh != 'true' }}
         run: |
           python - <<'PYEOF'
-          import datetime, requests
+          import datetime, requests, json, os
 
           now           = datetime.datetime.utcnow()
           current_month = now.strftime("%B").lower()
           current_year  = now.year
-          label         = now.strftime("%B %Y")
+          label         = now.strftime("%B %Y")   # e.g. "April 2026"
 
+          # Check if current month is already in data.json cache
+          if os.path.exists("data.json"):
+              with open("data.json") as f:
+                  cached = json.load(f)
+              cached_labels = [r["bulletin"] for r in cached]
+              if label in cached_labels:
+                  print(f"'{label}' already in cache — skipping.")
+                  with open("skip.txt", "w") as f:
+                      f.write("already_captured")
+                  exit()
+
+          # Current month not cached — check if bulletin is published yet
           url = (
               f"https://travel.state.gov/content/travel/en/legal/visa-law0/"
               f"visa-bulletin/{current_year}/visa-bulletin-for-{current_month}-{current_year}.html"
@@ -62,24 +74,12 @@ jobs:
           try:
               r = requests.get(url, timeout=15,
                   headers={"User-Agent": "Mozilla/5.0"})
-
               if r.status_code == 200 and "F4" in r.text:
-                  try:
-                      with open("docs/index.html", "r", encoding="utf-8") as f:
-                          existing = f.read()
-                      if label in existing:
-                          print(f"'{label}' already captured — skipping.")
-                          with open("skip.txt", "w") as f:
-                              f.write("already_captured")
-                      else:
-                          print(f"'{label}' is live and not yet captured — will scrape.")
-                  except FileNotFoundError:
-                      print("No existing page — will generate fresh.")
+                  print(f"'{label}' is live — will scrape.")
               else:
                   print(f"Bulletin not yet published (HTTP {r.status_code}) — skipping.")
                   with open("skip.txt", "w") as f:
                       f.write("not_published")
-
           except Exception as e:
               print(f"Request failed ({e}) — will attempt scrape anyway.")
           PYEOF
