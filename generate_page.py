@@ -142,6 +142,15 @@ def generate_html(results, password, priority_date=""):
     .tracker-item .t-value.amber  {{ color: #f59e0b; }}
     .tracker-item .t-sub {{ font-size: 11px; color: #475569; margin-top: 3px; }}
 
+    .adv {{
+      display: inline-block; font-size: 11px; font-weight: 600;
+      padding: 1px 6px; border-radius: 4px; margin-left: 6px;
+      vertical-align: middle;
+    }}
+    .adv-pos  {{ background: #14532d; color: #86efac; }}
+    .adv-neg  {{ background: #450a0a; color: #fca5a5; }}
+    .adv-zero {{ background: #1e293b; color: #64748b; }}
+
     .progress-wrap {{ margin-top: 4px; }}
     .progress-label-row {{
       display: flex; justify-content: space-between;
@@ -407,21 +416,40 @@ function diffDays(a, b)  {{ return Math.round((b - a) / 86400000); }}
 function addDays(d, n)   {{ return new Date(d.getTime() + n * 86400000); }}
 
 /* ── Build table ── */
+function advanceBadge(days) {{
+  if (days === null) return "";
+  if (days > 0)  return `<span class="adv adv-pos">+${{days}}d</span>`;
+  if (days < 0)  return `<span class="adv adv-neg">${{days}}d</span>`;
+  return `<span class="adv adv-zero">0d</span>`;
+}}
+
 function buildTable(myDate) {{
   const tbody = document.getElementById("data-tbody");
   tbody.innerHTML = "";
-  TABLE_DATA.forEach(r => {{
+  TABLE_DATA.forEach((r, i) => {{
     const fa        = parseDate(r.final_action_date);
+    const ff        = parseDate(r.dates_for_filing);
     const highlight = myDate && fa && fa >= myDate;
     const tr        = document.createElement("tr");
     if (highlight) tr.className = "highlight-row";
-    const sfA = !parseDate(r.final_action_date) && r.final_action_date !== "N/A";
-    const sfF = !parseDate(r.dates_for_filing)  && r.dates_for_filing  !== "N/A";
+
+    const sfA = !fa && r.final_action_date !== "N/A";
+    const sfF = !ff && r.dates_for_filing  !== "N/A";
+
+    // Compare with next row (older month)
+    let advFA = null, advFF = null;
+    if (i + 1 < TABLE_DATA.length) {{
+      const prevFA = parseDate(TABLE_DATA[i + 1].final_action_date);
+      const prevFF = parseDate(TABLE_DATA[i + 1].dates_for_filing);
+      if (fa && prevFA) advFA = diffDays(prevFA, fa);
+      if (ff && prevFF) advFF = diffDays(prevFF, ff);
+    }}
+
     tr.innerHTML = `
       <td class="bulletin-col">${{r.bulletin}}</td>
       <td>${{r.release_date}}</td>
-      <td class="${{sfA ? "special" : ""}}">${{r.final_action_date}}</td>
-      <td class="${{sfF ? "special" : ""}}">${{r.dates_for_filing}}</td>`;
+      <td class="${{sfA ? "special" : ""}}">${{r.final_action_date}} ${{advanceBadge(advFA)}}</td>
+      <td class="${{sfF ? "special" : ""}}">${{r.dates_for_filing}} ${{advanceBadge(advFF)}}</td>`;
     tbody.appendChild(tr);
   }});
 }}
