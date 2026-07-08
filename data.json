@@ -1,5 +1,14 @@
 [
   {
+    "bulletin": "July 2026",
+    "month": 7,
+    "year": 2026,
+    "release_date": "2026-06-02",
+    "final_action_date": "2009-01-01",
+    "dates_for_filing": "2010-03-01",
+    "url": "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin/2026/visa-bulletin-for-july-2026.html"
+  },
+  {
     "bulletin": "June 2026",
     "month": 6,
     "year": 2026,
@@ -97,14 +106,5 @@
     "final_action_date": "2008-01-01",
     "dates_for_filing": "2009-01-01",
     "url": "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin/2025/visa-bulletin-for-august-2025.html"
-  },
-  {
-    "bulletin": "July 2025",
-    "month": 7,
-    "year": 2025,
-    "release_date": "2025-06-03",
-    "final_action_date": "2008-01-01",
-    "dates_for_filing": "2008-09-08",
-    "url": "https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin/2025/visa-bulletin-for-july-2025.html"
   }
 ]
